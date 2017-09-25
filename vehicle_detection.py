@@ -4,6 +4,7 @@
 
 import argparse
 import os
+import time
 
 import pickle
 import glob
@@ -11,16 +12,16 @@ import glob
 import numpy as np
 import cv2
 
-import matplotlib.pyplot as plt
 from moviepy.editor import VideoFileClip
 
 from scipy.ndimage.measurements import label
 from skimage.feature import hog
 from sklearn.utils import shuffle
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 from sklearn import svm, grid_search
 
-import random
+import _pickle as cPickle
 
 
 ######################
@@ -38,10 +39,10 @@ def color_hist(img, nbins=32, bins_range=(0, 256)):
     # Concatenate the histograms into a single feature vector
     hist_features = np.concatenate((rhist[0], ghist[0], bhist[0]))
     # Return the individual histograms, bin_centers and feature vector
-    return rhist, ghist, bhist, bin_centers, hist_features
+    return hist_features
 
 
-def bin_spatial(img, color_space='RGB', size=(32, 32)):
+def bin_spatial(img, size=(32, 32), color_space='RGB'):
     # Convert image to new color space (if specified)
     if color_space != 'RGB':
         if color_space == 'HSV':
@@ -56,7 +57,7 @@ def bin_spatial(img, color_space='RGB', size=(32, 32)):
             feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2YCrCb)
     else: feature_image = np.copy(img)             
     # Use cv2.resize().ravel() to create the feature vector
-    features = cv2.resize(feature_image, size).ravel() 
+    features = cv2.resize(feature_image, (32, 32)).ravel() 
     # Return the feature vector
     return features
     
@@ -73,8 +74,15 @@ def get_hog_features(img, orient, pix_per_cell, cell_per_block, vis=False, featu
                        visualise=False, feature_vector=feature_vec)
         return features
 
+def convert_color(img, conv='RGB2YCrCb'):
+    if conv == 'RGB2YCrCb':
+        return cv2.cvtColor(img, cv2.COLOR_RGB2YCrCb)
+    if conv == 'BGR2YCrCb':
+        return cv2.cvtColor(img, cv2.COLOR_BGR2YCrCb)
+    if conv == 'RGB2LUV':
+        return cv2.cvtColor(img, cv2.COLOR_RGB2LUV)
 
-def find_cars(img, box_list, ystart, ystop, scale, svc, X_scaler, orient=9, pix_per_cell=8, cell_per_block=2, spatial_size=32, hist_bins=32):
+def find_cars(img, box_list, ystart, ystop, scale, svc, X_scaler, orient=9, pix_per_cell=8, cell_per_block=2, spatial_size=(32,32), hist_bins=32, debug=False):
     
     draw_img = np.copy(img)
     img = img.astype(np.float32)/255
@@ -132,15 +140,20 @@ def find_cars(img, box_list, ystart, ystop, scale, svc, X_scaler, orient=9, pix_
             test_prediction = svc.predict(test_features)
             
             if test_prediction == 1:
+                print("Vehicle Detected")
                 xbox_left = np.int(xleft*scale)
                 ytop_draw = np.int(ytop*scale)
                 win_draw = np.int(window*scale)
-                #cv2.rectangle(draw_img,(xbox_left, ytop_draw+ystart),(xbox_left+win_draw,ytop_draw+win_draw+ystart),(0,0,255),6)
-                points = np.array([[xbox_left, ytop_draw+ystart],[xbox_left+win_draw,ytop_draw+win_draw+ystart]])
-                box_list.append(points)
+                if debug:
+                    cv2.rectangle(draw_img,(xbox_left, ytop_draw+ystart),(xbox_left+win_draw,ytop_draw+win_draw+ystart),(0,0,255),6)
+                else:
+                    points = np.array([[xbox_left, ytop_draw+ystart],[xbox_left+win_draw,ytop_draw+win_draw+ystart]])
+                    box_list.append(points)
                 
-    #return draw_img
-    return box_list
+    if debug:
+        return draw_img
+    else:
+        return box_list
 
 def add_heat(heatmap, bbox_list):
     # Iterate through list of bboxes
@@ -208,17 +221,34 @@ def single_img_features(img, color_space='RGB', spatial_size=(32, 32),
         if hog_channel == 'ALL':
             hog_features = []
             for channel in range(feature_image.shape[2]):
-                hog_features.extend(get_hog_features(feature_image[:,:,channel], 
+                img_features.append(get_hog_features(feature_image[:,:,channel], 
                                     orient, pix_per_cell, cell_per_block, 
                                     vis=False, feature_vec=True))      
         else:
             hog_features = get_hog_features(feature_image[:,:,hog_channel], orient, 
                         pix_per_cell, cell_per_block, vis=False, feature_vec=True)
+            img_features.append(hog_features)
         #8) Append features to list
-        img_features.append(hog_features)
 
     #9) Return concatenated array of features
-    return np.concatenate(img_features)
+    return np.hstack(img_features).astype(np.float64).reshape(-1)
+
+def load_data(X_raw,Y_raw,filepath,y_val):
+
+    print("Starting to Load {}".format(filepath))
+
+    images = glob.glob(filepath)
+    for idx, fname in enumerate(images):
+        image = cv2.imread(fname)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        #assert(image.shape[0]==64)
+        #assert(image.shape[1]==64)
+        X_raw.append(image)
+        Y_raw.append(y_val)
+
+    print("Finished Loading {}".format(filepath))
+
+    return X_raw, Y_raw
 
 def get_raw_data():
     
@@ -229,88 +259,61 @@ def get_raw_data():
     ## Vehicle Labels ##
     ####################
 
-    images = glob.glob("vehicles/GTI_Far/*.png")
-    for idx, fname in enumerate(images):
-        image = cv2.imread(fname)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        X_raw.append(image)
-        Y_raw.append(1)
+    X_raw, Y_raw = load_data(X_raw,Y_raw,"vehicles/GTI_Far/*.png",1)
 
-    images = glob.glob("vehicles/GTI_Left/*.png")
-    for idx, fname in enumerate(images):
-        image = cv2.imread(fname)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        X_raw.append(image)
-        Y_raw.append(1)
+    X_raw, Y_raw = load_data(X_raw,Y_raw,"vehicles/GTI_Left/*.png",1)
 
+    X_raw, Y_raw = load_data(X_raw,Y_raw,"vehicles/GTI_MiddleClose/*.png",1)
 
-    images = glob.glob("vehicles/GTI_MiddleClose/*.png")
-    for idx, fname in enumerate(images):
-        image = cv2.imread(fname)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        X_raw.append(image)
-        Y_raw.append(1)
+    X_raw, Y_raw = load_data(X_raw,Y_raw,"vehicles/GTI_Right/*.png",1)
 
-    images = glob.glob("vehicles/GTI_Right/*.png")
-    for idx, fname in enumerate(images):
-        image = cv2.imread(fname)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        X_raw.append(image)
-        Y_raw.append(1)
-
-    images = glob.glob("vehicles/KITTI_extracted/*.png")
-    for idx, fname in enumerate(images):
-        image = cv2.imread(fname)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        X_raw.append(image)
-        Y_raw.append(1)
+    X_raw, Y_raw = load_data(X_raw,Y_raw,"vehicles/KITTI_extracted/*.png",1)
 
 
     ####################
     ## Other Labels   ##
     ####################
 
-    images = glob.glob("non_vehicles/GTI/*.png")
-    for idx, fname in enumerate(images):
-        image = cv2.imread(fname)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        X_raw.append(image)
-        Y_raw.append(0)
+    X_raw, Y_raw = load_data(X_raw,Y_raw,"non-vehicles/GTI/*.png",0)
 
-    images = glob.glob("non_vehicles/Extras/*.png")
-    for idx, fname in enumerate(images):
-        image = cv2.imread(fname)
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        X_raw.append(image)
-        Y_raw.append(0)
+    X_raw, Y_raw = load_data(X_raw,Y_raw,"non-vehicles/Extras/*.png",0)
 
-    X_raw = np.array(X_raw).astype(np.float64)
-    Y_raw = np.array(Y_raw).astype(np.float64)
+    #######################
+    ## Convert to Array  ##
+    #######################
+
+    X_raw = np.array(X_raw)
+    Y_raw = np.array(Y_raw)
 
     return X_raw, Y_raw
 
 def get_data():
 
-    print("Loading Data")
+    print("\n\nLoading Data")
 
     X_raw, Y_raw = get_raw_data()
+
+    print("Getting Features from Raw Data")
 
     X_train = []
     for i in range(X_raw.shape[0]):
         #X_raw[i] = (X_raw[i] - 128.0)/128.0
         xx = single_img_features(X_raw[i])
+        #assert(xx.shape[0]==8369)
         X_train.append(xx)
 
-    X_train = np.array(X_train).astype(np.float64)
+    X_train = np.array(X_train)
     Y_train = Y_raw
 
+
     # Shuffle data
+    print("Shuffling Data")
     X_train, Y_train = shuffle(X_train, Y_train)
 
     print("X_train shape:{}".format(X_train.shape))
     print("Y_train shape:{}".format(Y_train.shape))
 
-    print("Finished Loading Data")
+    print("\n\nFinished Loading Data")
 
     return X_train, Y_train
 
@@ -329,17 +332,35 @@ class Vehicle_Detector():
 
     def train(self, X_train, Y_train):
 
-        print("Started Training")
+        print("\n\nStarted Training")
+        t_1=time.time()
 
         self.scaler.fit(X_train)
         scaled_X = self.scaler.transform(X_train)
 
-        parameters = {'kernel':('linear', 'rbf'), 'C':[1, 10]}
+        X_train, X_test, Y_train, Y_test = train_test_split(X_train, Y_train, test_size=0.4, random_state=0)
+
+        parameters = {'kernel':('linear', 'rbf'), 'C':[0.1, 1, 10],  'gamma':[0.1, 1, 10]}
         svr = svm.SVC()
         self.svc = grid_search.GridSearchCV(svr, parameters)
         self.svc.fit(scaled_X, Y_train)
 
+        # save the classifier
+        with open('output_files/model.pkl', 'wb') as fid:
+            cPickle.dump(self.svc, fid)    
+
+
+        print("Best parameters set found on development set: {}".format(self.svc.best_params_))
+        print("Cross Val Score : {}".format(self.svc.score(X_test, Y_test)))
+
+
+        t_2=time.time()
         print("Finished Training")
+        print("Training took {} seconds".format(round(t_2-t_1, 5)))
+
+    def load_model(self):
+        with open('output_files/model.pkl', 'rb') as fid:
+            self.svc = cPickle.load(fid)
 
     def process_image(self,img):
 
@@ -348,7 +369,6 @@ class Vehicle_Detector():
         x_size = img.shape[1]
 
         box_list = []
-
 
         # Normalize Data
         #img = (img - 128.0)/128.0
@@ -379,6 +399,8 @@ class Vehicle_Detector():
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         result = self.process_image(image)
+        result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+
 
         # Save Result in cv2 format (BGR)
         if save_result:
@@ -399,14 +421,35 @@ class Vehicle_Detector():
             print("\n Saving video at: {}".format(savepath))
             result_clip.write_videofile(savepath, audio=False)
 
+    def debug(self,filepath):
+
+        image = cv2.imread(filepath)
+        img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        y_size = img.shape[0]
+        x_size = img.shape[1]
+
+        draw_img = find_cars(img, 0, y_size*0.5, y_size*0.95, 1.5, self.svc, self.scaler, debug=True)
+        #box_list = find_cars(img, box_list, y_size*0.5, y_size*0.95, 1.5, self.svc, self.scaler, debug=False)
+
+        draw_img = cv2.cvtColor(draw_img, cv2.COLOR_RGB2BGR)
+        cv2.imwrite("figures/raw_predictions.png",draw_img)
+
 
     def test(self):
         X_train, Y_train = get_data()
         self.train(X_train, Y_train)
+        self.debug("test_files/test6.jpg")
+        '''
         images = glob.glob("test_files/*.jpg")
         for idx, fname in enumerate(images):
+            print("Testing on image {}".format(fname))
+            t_1=time.time()
             self.find_vehicles_image(fname)
+            t_2=time.time()
+            print("Prediction took {} seconds".format(round(t_2-t_1, 5)))
         self.find_vehicles_video("test_files/test_video.mp4")
+        '''
 
 
 
