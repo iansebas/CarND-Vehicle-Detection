@@ -18,8 +18,9 @@ from scipy.ndimage.measurements import label
 from skimage.feature import hog
 from sklearn.utils import shuffle
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split
+from sklearn.cross_validation import train_test_split
 from sklearn import svm, grid_search
+import multiprocessing
 
 import _pickle as cPickle
 
@@ -27,6 +28,16 @@ import _pickle as cPickle
 ######################
 ## HELPER FUNCTIONS ##
 ######################
+
+def draw_boxes(img, bboxes, color=(0, 0, 255), thick=6):
+    # Make a copy of the image
+    draw_img = np.copy(img)
+    # Iterate through the bounding boxes
+    for bbox in bboxes:
+        # Draw a rectangle given bbox coordinates
+        cv2.rectangle(draw_img, (int(bbox[0,0]),int(bbox[0,1])), (int(bbox[1,0]),int(bbox[1,1])), color, thick)
+    # Return the image copy with boxes drawn
+    return draw_img
     
 def color_hist(img, nbins=32, bins_range=(0, 256)):
     # Compute the histogram of the RGB channels separately
@@ -42,22 +53,8 @@ def color_hist(img, nbins=32, bins_range=(0, 256)):
     return hist_features
 
 
-def bin_spatial(img, size=(32, 32), color_space='RGB'):
-    # Convert image to new color space (if specified)
-    if color_space != 'RGB':
-        if color_space == 'HSV':
-            feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-        elif color_space == 'LUV':
-            feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2LUV)
-        elif color_space == 'HLS':
-            feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
-        elif color_space == 'YUV':
-            feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2YUV)
-        elif color_space == 'YCrCb':
-            feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2YCrCb)
-    else: feature_image = np.copy(img)             
-    # Use cv2.resize().ravel() to create the feature vector
-    features = cv2.resize(feature_image, (32, 32)).ravel() 
+def bin_spatial(img, size=(32, 32)):
+    features = cv2.resize(img, size).ravel() 
     # Return the feature vector
     return features
     
@@ -105,7 +102,7 @@ def find_cars(img, box_list, ystart, ystop, scale, svc, X_scaler, orient=9, pix_
     # 64 was the orginal sampling rate, with 8 cells and 8 pix per cell
     window = 64
     nblocks_per_window = (window // pix_per_cell) - cell_per_block + 1
-    cells_per_step = 2  # Instead of overlap, define how many cells to step
+    cells_per_step = 3  # Instead of overlap, define how many cells to step
     nxsteps = (nxblocks - nblocks_per_window) // cells_per_step
     nysteps = (nyblocks - nblocks_per_window) // cells_per_step
     
@@ -135,16 +132,15 @@ def find_cars(img, box_list, ystart, ystop, scale, svc, X_scaler, orient=9, pix_
             hist_features = color_hist(subimg, nbins=hist_bins)
 
             # Scale features and make a prediction
-            test_features = X_scaler.transform(np.hstack((spatial_features, hist_features, hog_features)).reshape(1, -1))    
-            #test_features = X_scaler.transform(np.hstack((shape_feat, hist_feat)).reshape(1, -1))    
-            test_prediction = svc.predict(test_features)
-            
+            test_features = X_scaler.transform(np.hstack((spatial_features, hist_features, hog_features)).reshape(1, -1)) 
+            test_prediction = svc.predict(test_features)   
+
             if test_prediction == 1:
-                print("Vehicle Detected")
                 xbox_left = np.int(xleft*scale)
                 ytop_draw = np.int(ytop*scale)
                 win_draw = np.int(window*scale)
                 if debug:
+                    print("Vehicle Detcted!")
                     cv2.rectangle(draw_img,(xbox_left, ytop_draw+ystart),(xbox_left+win_draw,ytop_draw+win_draw+ystart),(0,0,255),6)
                 else:
                     points = np.array([[xbox_left, ytop_draw+ystart],[xbox_left+win_draw,ytop_draw+win_draw+ystart]])
@@ -187,51 +183,26 @@ def draw_labeled_bboxes(img, labels):
     return img
 
 
-def single_img_features(img, color_space='RGB', spatial_size=(32, 32),
-                        hist_bins=32, orient=9, 
-                        pix_per_cell=8, cell_per_block=2, hog_channel='ALL',
-                        spatial_feat=True, hist_feat=True, hog_feat=True):    
-    #1) Define an empty list to receive features
-    img_features = []
-    #2) Apply color conversion if other than 'RGB'
-    if color_space != 'RGB':
-        if color_space == 'HSV':
-            feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2HSV)
-        elif color_space == 'LUV':
-            feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2LUV)
-        elif color_space == 'HLS':
-            feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2HLS)
-        elif color_space == 'YUV':
-            feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2YUV)
-        elif color_space == 'YCrCb':
-            feature_image = cv2.cvtColor(img, cv2.COLOR_RGB2YCrCb)
-    else: feature_image = np.copy(img)      
-    #3) Compute spatial features if flag is set
-    if spatial_feat == True:
-        spatial_features = bin_spatial(feature_image, size=spatial_size)
-        #4) Append features to list
-        img_features.append(spatial_features)
-    #5) Compute histogram features if flag is set
-    if hist_feat == True:
-        hist_features = color_hist(feature_image, nbins=hist_bins)
-        #6) Append features to list
-        img_features.append(hist_features)
-    #7) Compute HOG features if flag is set
-    if hog_feat == True:
-        if hog_channel == 'ALL':
-            hog_features = []
-            for channel in range(feature_image.shape[2]):
-                img_features.append(get_hog_features(feature_image[:,:,channel], 
-                                    orient, pix_per_cell, cell_per_block, 
-                                    vis=False, feature_vec=True))      
-        else:
-            hog_features = get_hog_features(feature_image[:,:,hog_channel], orient, 
-                        pix_per_cell, cell_per_block, vis=False, feature_vec=True)
-            img_features.append(hog_features)
-        #8) Append features to list
+def single_img_features(img, orient=9, pix_per_cell=8, cell_per_block=2, spatial_size=(32, 32), hist_bins=32):
 
-    #9) Return concatenated array of features
-    return np.hstack(img_features).astype(np.float64).reshape(-1)
+    img = img.astype(np.float32)/255
+
+    img = convert_color(img, conv='RGB2YCrCb')
+    spatial_features = bin_spatial(img, size=spatial_size)
+    hist_features = color_hist(img, nbins=hist_bins)
+
+    ch1 = img[:,:,0]
+    ch2 = img[:,:,1]
+    ch3 = img[:,:,2]
+    hog_feat1 = get_hog_features(ch1, orient, pix_per_cell, cell_per_block, feature_vec=True)
+    hog_feat2 = get_hog_features(ch2, orient, pix_per_cell, cell_per_block, feature_vec=True)
+    hog_feat3 = get_hog_features(ch3, orient, pix_per_cell, cell_per_block, feature_vec=True)
+    hog_features = np.hstack((hog_feat1, hog_feat2, hog_feat3))
+
+    features = np.hstack((spatial_features, hist_features, hog_features)).astype(np.float64).reshape(-1)
+
+    return features
+
 
 def load_data(X_raw,Y_raw,filepath,y_val):
 
@@ -241,8 +212,6 @@ def load_data(X_raw,Y_raw,filepath,y_val):
     for idx, fname in enumerate(images):
         image = cv2.imread(fname)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        #assert(image.shape[0]==64)
-        #assert(image.shape[1]==64)
         X_raw.append(image)
         Y_raw.append(y_val)
 
@@ -297,9 +266,7 @@ def get_data():
 
     X_train = []
     for i in range(X_raw.shape[0]):
-        #X_raw[i] = (X_raw[i] - 128.0)/128.0
         xx = single_img_features(X_raw[i])
-        #assert(xx.shape[0]==8369)
         X_train.append(xx)
 
     X_train = np.array(X_train)
@@ -329,28 +296,33 @@ class Vehicle_Detector():
     def __init__(self):
         self.svc = svm.SVC()
         self.scaler = StandardScaler()
+        self.y_size = 0
+        self.x_size = 0
 
-    def train(self, X_train, Y_train):
+    def train(self, X_train, Y_train, grid_search_enabled=False):
 
         print("\n\nStarted Training")
         t_1=time.time()
 
         self.scaler.fit(X_train)
-        scaled_X = self.scaler.transform(X_train)
+        X_train = self.scaler.transform(X_train)
 
         X_train, X_test, Y_train, Y_test = train_test_split(X_train, Y_train, test_size=0.4, random_state=0)
+        if grid_search_enabled:
+            parameters = {'kernel':('linear', 'rbf'), 'C':[0.1, 1, 10],  'gamma':[0.1, 1, 10]}
+            svr = svm.SVC()
+            self.svc = grid_search.GridSearchCV(svr, parameters, n_jobs=multiprocessing.cpu_count())
+        self.svc.fit(X_train, Y_train)
 
-        parameters = {'kernel':('linear', 'rbf'), 'C':[0.1, 1, 10],  'gamma':[0.1, 1, 10]}
-        svr = svm.SVC()
-        self.svc = grid_search.GridSearchCV(svr, parameters)
-        self.svc.fit(scaled_X, Y_train)
-
+        # save the scaler
+        with open('output_files/scaler.pkl', 'wb') as fid:
+            cPickle.dump(self.scaler, fid) 
         # save the classifier
         with open('output_files/model.pkl', 'wb') as fid:
             cPickle.dump(self.svc, fid)    
 
-
-        print("Best parameters set found on development set: {}".format(self.svc.best_params_))
+        if grid_search_enabled:
+            print("Best parameters set found on development set: {}".format(self.svc.best_params_))
         print("Cross Val Score : {}".format(self.svc.score(X_test, Y_test)))
 
 
@@ -359,29 +331,37 @@ class Vehicle_Detector():
         print("Training took {} seconds".format(round(t_2-t_1, 5)))
 
     def load_model(self):
+        with open('output_files/scaler.pkl', 'rb') as fid:
+            self.scaler = cPickle.load(fid)
         with open('output_files/model.pkl', 'rb') as fid:
             self.svc = cPickle.load(fid)
 
-    def process_image(self,img):
+    def find_all_cars(self,img):
 
-        heat = np.zeros_like(img[:,:,0]).astype(np.float)
         y_size = img.shape[0]
         x_size = img.shape[1]
 
         box_list = []
 
-        # Normalize Data
-        #img = (img - 128.0)/128.0
+        # Iterate over scales
+        box_list = find_cars(img, box_list, y_size*0.5, y_size*0.7, 1, self.svc, self.scaler)
+        box_list = find_cars(img, box_list, y_size*0.55, y_size*0.8, 2, self.svc, self.scaler)
+        box_list = find_cars(img, box_list, y_size*0.7, y_size, 3, self.svc, self.scaler)
 
-        for scale in np.arange(0.5,3,0.5):
+        return box_list
 
-            box_list = find_cars(img, box_list, y_size*0.5, y_size*0.95, scale, self.svc, self.scaler)
+
+    def process_image(self,img):
+
+        # Main function
+        box_list = self.find_all_cars(img)
 
         # Add heat to each box in box list
+        heat = np.zeros_like(img[:,:,0]).astype(np.float)
         heat = add_heat(heat,box_list)
 
         # Apply threshold to help remove false positives
-        heat = apply_threshold(heat,1)
+        #heat = apply_threshold(heat,1)
 
         # Visualize the heatmap when displaying    
         heatmap = np.clip(heat, 0, 255)
@@ -406,7 +386,7 @@ class Vehicle_Detector():
         if save_result:
             pos = filepath.rfind('/')
             savepath = "output_files/"+ filepath[pos:]
-            print("\n Saving image at: {}".format(savepath))
+            print("Saving image at: {}".format(savepath))
             cv2.imwrite(savepath,result)
 
 
@@ -423,33 +403,64 @@ class Vehicle_Detector():
 
     def debug(self,filepath):
 
+        t_1=time.time()
+
         image = cv2.imread(filepath)
         img = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
+        img2 = np.copy(img)
         y_size = img.shape[0]
         x_size = img.shape[1]
+        cv2.line(img2, (0,int(y_size*0.5)), (int(x_size),int(y_size*0.5)), (0, 255, 255), 3)
+        cv2.line(img2, (0,int(y_size*0.6)), (int(x_size),int(y_size*0.6)), (0, 255, 255), 3)
+        cv2.line(img2, (0,int(y_size*0.7)), (int(x_size),int(y_size*0.7)), (0, 255, 255), 3)
+        cv2.line(img2, (0,int(y_size*0.8)), (int(x_size),int(y_size*0.8)), (0, 255, 255), 3)
+        cv2.line(img2, (0,int(y_size*0.9)), (int(x_size),int(y_size*0.9)), (0, 255, 255), 3)
+        img2 = cv2.cvtColor(img2, cv2.COLOR_RGB2BGR)
+        cv2.imwrite("figures/exploration.png",img2)
 
-        draw_img = find_cars(img, 0, y_size*0.5, y_size*0.95, 1.5, self.svc, self.scaler, debug=True)
-        #box_list = find_cars(img, box_list, y_size*0.5, y_size*0.95, 1.5, self.svc, self.scaler, debug=False)
-
+        box_list = self.find_all_cars(img)
+        draw_img = draw_boxes(img, box_list)
         draw_img = cv2.cvtColor(draw_img, cv2.COLOR_RGB2BGR)
         cv2.imwrite("figures/raw_predictions.png",draw_img)
 
+        heat = np.zeros_like(img[:,:,0]).astype(np.float)
+        heat = add_heat(heat,box_list)
+        #heat = apply_threshold(heat,1)
 
-    def test(self):
-        X_train, Y_train = get_data()
-        self.train(X_train, Y_train)
+        heatmap = np.clip(heat, 0, 255)
+        cv2.imwrite("figures/heatmap.png",heatmap*255.0/heatmap.max())
+
+        labels = label(heatmap)
+        draw_img = draw_labeled_bboxes(np.copy(img), labels)
+
+        draw_img = cv2.cvtColor(draw_img, cv2.COLOR_RGB2BGR)
+        cv2.imwrite("figures/final_predictions.png",draw_img)
+
+        t_2=time.time()
+
+        print("\nProcessing took {} seconds".format(round(t_2-t_1, 5)))
+
+
+    def test(self,already_trained=True):
+        if not already_trained:
+            X_train, Y_train = get_data()
+            self.train(X_train, Y_train)
+        else:
+            self.load_model()
+        print("\nSVC Param: {}".format(self.svc.get_params()))
+
         self.debug("test_files/test6.jpg")
-        '''
+
         images = glob.glob("test_files/*.jpg")
         for idx, fname in enumerate(images):
-            print("Testing on image {}".format(fname))
+            print("\nTesting on image {}".format(fname))
             t_1=time.time()
             self.find_vehicles_image(fname)
             t_2=time.time()
             print("Prediction took {} seconds".format(round(t_2-t_1, 5)))
-        self.find_vehicles_video("test_files/test_video.mp4")
-        '''
+        #self.find_vehicles_video("test_files/test_video.mp4")
+        self.find_vehicles_video("test_files/project_video.mp4")
 
 
 
