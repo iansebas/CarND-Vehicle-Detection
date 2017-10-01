@@ -49,6 +49,7 @@ The find_cars method in line 82 performs an sliding window search based on an im
         box_list = find_cars(img, box_list, y_size*0.5, y_size*0.7, 1, self.svc, self.scaler)
         box_list = find_cars(img, box_list, y_size*0.55, y_size*0.8, 2, self.svc, self.scaler)
         box_list = find_cars(img, box_list, y_size*0.7, y_size, 3, self.svc, self.scaler)
+        box_list = find_cars(img, box_list, y_size*0.5, y_size, 4, self.svc, self.scaler)
 ```
 Those combinations were chosen to account for the fact that cars will occupy less pixels at a distance, but more when they are close to you. Then, the images are then scaled such that vehicles could be enclosed in 64x64 image patches, as the vehicle images I used for training.
 
