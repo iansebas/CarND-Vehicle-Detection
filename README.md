@@ -1,33 +1,73 @@
-# Vehicle Detection
-[![Udacity - Self-Driving Car NanoDegree](https://s3.amazonaws.com/udacity-sdc/github/shield-carnd.svg)](http://www.udacity.com/drive)
+## Overview
+
+This repository contains a Python program to detect vehicles on the road.
+
+All the code is in vehicle_detection.py
+The sample results are in output_files.
+
+## Dependencies
+
+* Python 3.5
+* NumPy
+* OpenCV
+* Matplotlib
+* MoviePy
+* Sklearn
+* Scipy
+
+## Running the code
+
+### Demo Run
+
+Run:
+
+```
+wget https://s3.amazonaws.com/udacity-sdc/Vehicle_Tracking/vehicles.zip
+wget https://s3.amazonaws.com/udacity-sdc/Vehicle_Tracking/non-vehicles.zip
+python vehicle_detection.py
+```
+
+## Writeup / Reflection
+
+#### 1. Provide a Writeup / README that includes all the rubric points and how you addressed each one. 
+
+You're reading it!
+
+#### 2. Extraction of HOG features from training images, and parameter selection
+single_img_features() in line 186 is the main function that extracts features for training. It calls get_hog_features( a wrapper for skimage.feature.hog). I use orient=9, pix_per_cell=8, cell_per_block=2, spatial_size=(32,32), hist_bins=32 in the YCrCb color space. The choice of these parameters was meant to provide expresive features without incrementing the computational load by a lot. Finer features can be better learned but take a computational toll.
+
+#### 3. Classifier training
+train() in line 307 is the main function that trains a SVM for classification, and cross validates its performance. StandardScaler() and scaling around 128.0 was performed for numerical optimization.  The cross validation performance was 0.99 with the following parameters:
+
+```
+SVC Param: {'class_weight': None, 'cache_size': 200, 'coef0': 0.0, 'C': 1.0, 'random_state': None, 'tol': 0.001, 'probability': False, 'shrinking': True, 'verbose': False, 'degree': 3, 'kernel': 'rbf', 'decision_function_shape': None, 'max_iter': -1, 'gamma': 'auto'}
+```
+
+#### 4. Sliding window search
+The find_cars method in line 82 performs an sliding window search based on an image region and scale. The find_all_cars method calls the find_cars functions with the followong combination of regions and scales:
+```
+        box_list = find_cars(img, box_list, y_size*0.5, y_size*0.7, 1, self.svc, self.scaler)
+        box_list = find_cars(img, box_list, y_size*0.55, y_size*0.8, 2, self.svc, self.scaler)
+        box_list = find_cars(img, box_list, y_size*0.7, y_size, 3, self.svc, self.scaler)
+```
+Those combinations were chosen to account for the fact that cars will occupy less pixels at a distance, but more when they are close to you. Then, the images are then scaled such that vehicles could be enclosed in 64x64 image patches, as the vehicle images I used for training.
+
+#### 5. Pipeling overview
+The SVC gives raw predictions:
+![alt text](./figures/raw_predictions.png "Raw Predictions")
+From all the raw predictions, a heatmap is generated 
+![alt text](./figures/heatmap.png "Heat Map")
+Thresholding the heatmaps, we obtain the final predicition:
+![alt text](./figures/final_predictions.png "Final Predictions")
 
 
-In this project, your goal is to write a software pipeline to detect vehicles in a video (start with the test_video.mp4 and later implement on full project_video.mp4), but the main output or product we want you to create is a detailed writeup of the project.  Check out the [writeup template](https://github.com/udacity/CarND-Vehicle-Detection/blob/master/writeup_template.md) for this project and use it as a starting point for creating your own writeup.  
+#### 6. Video Result
 
-Creating a great writeup:
----
-A great writeup should include the rubric points as well as your description of how you addressed each point.  You should include a detailed description of the code used in each step (with line-number references and code snippets where necessary), and links to other supporting documents or external references.  You should include images in your writeup to demonstrate how your code works with examples.  
+Here's a [link to my video result](./output_files/project_video.mp4)
 
-All that said, please be concise!  We're not looking for you to write a book here, just a brief description of how you passed each rubric point, and references to the relevant code :). 
+#### 7.  False Positives
 
-You can submit your writeup in markdown or use another method and submit a pdf instead.
+The main logic to reject false positives is implemented within the process_image(). A memory of the predicitions is kept (self.box_list_memory). Heatmaps are formed using the predicitions from both the present and recent past. Because outliers rarely appear in consecutive frames, this heatmap framework filters out outliers.
 
-The Project
----
-
-The goals / steps of this project are the following:
-
-* Perform a Histogram of Oriented Gradients (HOG) feature extraction on a labeled training set of images and train a classifier Linear SVM classifier
-* Optionally, you can also apply a color transform and append binned color features, as well as histograms of color, to your HOG feature vector. 
-* Note: for those first two steps don't forget to normalize your features and randomize a selection for training and testing.
-* Implement a sliding-window technique and use your trained classifier to search for vehicles in images.
-* Run your pipeline on a video stream (start with the test_video.mp4 and later implement on full project_video.mp4) and create a heat map of recurring detections frame by frame to reject outliers and follow detected vehicles.
-* Estimate a bounding box for vehicles detected.
-
-Here are links to the labeled data for [vehicle](https://s3.amazonaws.com/udacity-sdc/Vehicle_Tracking/vehicles.zip) and [non-vehicle](https://s3.amazonaws.com/udacity-sdc/Vehicle_Tracking/non-vehicles.zip) examples to train your classifier.  These example images come from a combination of the [GTI vehicle image database](http://www.gti.ssr.upm.es/data/Vehicle_database.html), the [KITTI vision benchmark suite](http://www.cvlibs.net/datasets/kitti/), and examples extracted from the project video itself.   You are welcome and encouraged to take advantage of the recently released [Udacity labeled dataset](https://github.com/udacity/self-driving-car/tree/master/annotations) to augment your training data.  
-
-Some example images for testing your pipeline on single frames are located in the `test_images` folder.  To help the reviewer examine your work, please save examples of the output from each stage of your pipeline in the folder called `ouput_images`, and include them in your writeup for the project by describing what each image shows.    The video called `project_video.mp4` is the video your pipeline should work well on.  
-
-**As an optional challenge** Once you have a working pipeline for vehicle detection, add in your lane-finding algorithm from the last project to do simultaneous lane-finding and vehicle detection!
-
-**If you're feeling ambitious** (also totally optional though), don't stop there!  We encourage you to go out and take video of your own, and show us how you would implement this project on a new video!
+#### 8. Problems and potential improvements
+	* The pipeline is not to real-time  

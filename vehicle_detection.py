@@ -299,6 +299,11 @@ class Vehicle_Detector():
         self.y_size = 0
         self.x_size = 0
 
+        self.frame = 0
+        self.processed_frames = 0
+        self.skip_frame = 5
+        self.box_list_memory = []
+
     def train(self, X_train, Y_train, grid_search_enabled=False):
 
         print("\n\nStarted Training")
@@ -346,22 +351,30 @@ class Vehicle_Detector():
         # Iterate over scales
         box_list = find_cars(img, box_list, y_size*0.5, y_size*0.7, 1, self.svc, self.scaler)
         box_list = find_cars(img, box_list, y_size*0.55, y_size*0.8, 2, self.svc, self.scaler)
-        box_list = find_cars(img, box_list, y_size*0.7, y_size, 3, self.svc, self.scaler)
+        box_list = find_cars(img, box_list, y_size*0.65, y_size, 3, self.svc, self.scaler)
+        box_list = find_cars(img, box_list, y_size*0.5, y_size, 4, self.svc, self.scaler)
 
         return box_list
 
-
     def process_image(self,img):
 
-        # Main function
-        box_list = self.find_all_cars(img)
+        if self.frame%self.skip_frame == 0 or self.frame < self.skip_frame :
+
+            # Main function
+            box_list = self.find_all_cars(img)
+
+            self.box_list_memory = self.box_list_memory + box_list
+
+            self.processed_frames += 1
+
 
         # Add heat to each box in box list
         heat = np.zeros_like(img[:,:,0]).astype(np.float)
-        heat = add_heat(heat,box_list)
+        pos = int(len(self.box_list_memory)/self.processed_frames*self.skip_frame*3) if self.frame > self.skip_frame*3 else len(self.box_list_memory)-1
+        heat = add_heat(heat,self.box_list_memory[-pos:])
 
         # Apply threshold to help remove false positives
-        #heat = apply_threshold(heat,1)
+        heat = apply_threshold(heat,2) if self.frame > self.skip_frame else apply_threshold(heat,1)
 
         # Visualize the heatmap when displaying    
         heatmap = np.clip(heat, 0, 255)
@@ -370,6 +383,10 @@ class Vehicle_Detector():
         labels = label(heatmap)
         draw_img = draw_labeled_bboxes(np.copy(img), labels)
 
+
+
+        self.frame += 1
+
         return draw_img
 
     def find_vehicles_image(self, filepath, save_result = True):
@@ -377,6 +394,9 @@ class Vehicle_Detector():
         # Reading in an image.
         image = cv2.imread(filepath)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        self.frame = 0
+        self.box_list_memory = []
 
         result = self.process_image(image)
         result = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
@@ -392,6 +412,10 @@ class Vehicle_Detector():
 
     def find_vehicles_video(self, filepath, save_result = True):
         clip = VideoFileClip(filepath)
+        
+        self.frame = 0
+        self.box_list_memory = []
+
         result_clip = clip.fl_image(self.process_image)        
 
         # Save Result 
@@ -442,13 +466,14 @@ class Vehicle_Detector():
         print("\nProcessing took {} seconds".format(round(t_2-t_1, 5)))
 
 
-    def test(self,already_trained=True):
+    def test(self,already_trained=False):
         if not already_trained:
             X_train, Y_train = get_data()
             self.train(X_train, Y_train)
         else:
             self.load_model()
         print("\nSVC Param: {}".format(self.svc.get_params()))
+
 
         self.debug("test_files/test6.jpg")
 
@@ -459,6 +484,7 @@ class Vehicle_Detector():
             self.find_vehicles_image(fname)
             t_2=time.time()
             print("Prediction took {} seconds".format(round(t_2-t_1, 5)))
+
         #self.find_vehicles_video("test_files/test_video.mp4")
         self.find_vehicles_video("test_files/project_video.mp4")
 
